@@ -1,0 +1,413 @@
+# Polymarket Toolkit
+
+**For anyone who wants to research Polymarket on their own** — run the CLI yourself, or install skills for Claude / Cursor / OpenClaw and let AI run the tools. Read-only public APIs. No API keys. No signing.
+
+> **Nothing to install?** [**probpocket.com/lookup**](https://probpocket.com/lookup/?utm_source=toolkit&utm_content=readme-top) answers the same first question in a browser: paste an address, see lifetime PnL, what the wallet actually makes its money on, and how its leaderboard days compare with its real settled total. Free, no signup. Same public APIs as this CLI.
+
+[中文说明](./README.zh.md)
+
+## Toolbox · pick a drawer
+
+| I want to… | Start here |
+|------------|------------|
+| **Research an address** | `pm profile <addr>` · skills `polymarket-profile` / `polymarket-pnl` / `polymarket-brier` |
+| **See whether they actually cash out** | `pm cashflow <addr>` — on-chain pUSD withdrawals, separated from trade settlement |
+| **Check execution quality** | `pm markout <addr>` — markout vs market baseline (adverse selection) |
+| **Classify a trader** | `pm mix <addr>` — passive market maker or aggressive taker |
+| **Scan markets & prices** | `pm markets` · [`examples/01,09,11`](./examples/) · [`docs/cookbook.md`](./docs/cookbook.md) |
+| **Wire my own data pipeline** | [`src/index.ts`](./src/index.ts) · cookbook · `examples/14` |
+| **Validation checklists** | [`docs/templates/`](./docs/templates/) — handoff · backtest · paper · live-gate · runbook |
+| **PnL cross-check (LB snapshot)** | `pm pnl-check` · [`docs/fee-inclusive-pnl.md`](./docs/fee-inclusive-pnl.md) |
+| **Track leaderboard / redeem / activity** | `pm lb` · `pm redeem` · `pm activity` · [`examples/05–08,15–20`](./examples/) |
+| **Give an AI agent tools** | [`skills/`](./skills/) — copy into Claude / OpenClaw / Cursor |
+
+Full index: [**docs/toolbox.md**](./docs/toolbox.md)
+
+### 30-second try
+
+```bash
+git clone https://github.com/runesleo/polymarket-toolkit.git && cd polymarket-toolkit
+./bin/pm profile 0x63ce342161250d705dc0b16df89036c8e5f9ba9a
+```
+
+**What you get:** LB PnL snapshot + first-page positions. For audit-grade PnL, use the `polymarket-pnl` skill.
+
+**V2 merge/split broken?** → [`docs/v2-ctf-ops-faq.md`](./docs/v2-ctf-ops-faq.md) + `./bin/pm v2-check 0x…`
+
+## CLI (`pm`)
+
+Node **22+** (uses `--experimental-strip-types`). From repo root:
+
+```bash
+./bin/pm help
+./bin/pm profile 0x63ce342161250d705dc0b16df89036c8e5f9ba9a
+./bin/pm profile Theo4 --json
+./bin/pm brier 0x63ce342161250d705dc0b16df89036c8e5f9ba9a
+./bin/pm redeem 0x63ce342161250d705dc0b16df89036c8e5f9ba9a 25
+./bin/pm markets --limit 5 --active
+./bin/pm activity 0x63ce342161250d705dc0b16df89036c8e5f9ba9a --type TRADE --max-pages 5
+```
+
+Prefer `./bin/pm` from repo root (no install step). Or: `npm run pm -- profile …` · optional `npm link` for global `pm`.
+
+| Command | What it does |
+|---------|--------------|
+| `pm profile` | LB PnL + open positions sample + Brier hint |
+| `pm activity` | Activity pagination + **~4000 row cap warnings** |
+| `pm scan` | Top markets by 24h volume + spread |
+| `pm updown` | Crypto updown event fields / resolution source |
+| `pm v2-check` | V2 CTF split/merge checklist + activity sample |
+| `pm lb` | Leaderboard snapshot + day-over-day diff |
+| `pm pnl-check` | LB snapshot + hints — not audit-grade PnL |
+| `pm limits` | Official API rate limit pacing |
+| `pm brier` | Brier score from settled positions (sample) |
+| `pm markout` | Execution quality — markout vs market baseline |
+| `pm mix` | Execution style — maker/taker split of recent fills |
+| `pm redeem` | Read-only redeem watchdog JSON |
+| `pm markets` | Quick Gamma market list |
+
+Audit-grade PnL (Python): `python3 skills/polymarket-pnl/compute_precise_pnl.py --address …`
+
+### `pm markout` — is this address getting picked off?
+
+```bash
+./bin/pm markout 0x9a18f10966262d9be5d662754256380583fabb54 --fills 200
+```
+
+Markout is where a fill stands some seconds later: `(reference − fill) × direction`, in
+cents per share. Negative means the price walked away from you — adverse selection.
+
+Three things this command does that a hand-rolled version usually gets wrong:
+
+- **Passive fills are included.** `/trades?user=` behaves like `takerOnly=true` by
+  default, so a market maker's entire passive side is missing unless you ask for it.
+- **The reference is a windowed VWAP, not the next print.** Prints alternate between bid
+  and ask, and that bounce alone makes every SELL look good and every BUY look bad.
+- **Everything is measured against a baseline** — the same tokens over the same span,
+  minus this wallet. Levels drift; the excess is the part that means something.
+
+Read the excess column and the coverage column together. In short-dated markets a large
+`tau` leaves most fills with nothing ahead of them to be priced against, and the mean
+then describes the surviving handful rather than the trader.
+
+**Why these three defaults exist.** I ran 15 strategies on Polymarket over half a year,
+and the ones that cost the most failed at measurement, not at strategy: the same logic
+made +77% on paper and lost −74% live; 18.3% of my own trade records were quietly wrong,
+two thirds of those being false wins; market-making went 0 for 10 while the platform
+shipped three fee formulas in a single night. Each flag above is one of those mistakes
+turned into a default, so it isn't paid for twice.
+
+The full write-up — 15 strategies, 5 deep pits, 14,000 words — is at
+[leolabs.me/pm-quant](https://leolabs.me/pm-quant) ($49). It comes with monthly supplement
+notes; the current one measures a ~300ms server-side floor on taker orders that no colo or
+private line removes, against 56ms for maker.
+
+## TypeScript library
+
+Zero-dependency helpers in [`src/index.ts`](./src/index.ts). Run demos with Node 22+:
+
+```bash
+npx tsx examples/01-fetch-gamma-markets.ts
+node --experimental-strip-types examples/01-fetch-gamma-markets.ts
+```
+
+- **Examples:** [`examples/`](./examples/) — one numbered script per API pattern
+- **Cookbook:** [`docs/cookbook.md`](./docs/cookbook.md) — bilingual recipes
+
+## Skills (AI agents)
+
+| Skill | What it does |
+|-------|-------------|
+| `polymarket-profile` | Deep profile — PnL, win rate, positions, categories, strategy detection |
+| `polymarket-brier` | Prediction accuracy scoring, calibration analysis |
+| `polymarket-pnl` | Audit-grade PnL via cashflow reconstruction (~0.2% MAPE vs. official) |
+
+Install: copy the chosen skill into the skills directory configured by your agent client.
+`polymarket-pnl` also needs: `pip install httpx`
+
+Skill details: [`skills/*/SKILL.md`](./skills/) · long-form docs in sections below.
+
+---
+
+## What's in this repo
+
+| Included | Not included |
+|----------|--------------|
+| Read-only APIs, CLI, skills, docs, templates | Private keys, signing, or trade execution |
+| V2 FAQ + `pm v2-check` diagnostics | Runnable merge/split/redeem modules |
+| `polymarket-pnl` audit script | Custodial wallets or one-click trading |
+| Builder attribution helper for future CLOB executors | Builder API credentials or reward guarantees |
+| Opt-in [`executor/`](./executor) sub-package (isolated deps, dry-run default) | Custody, strategy logic, or one-click trading |
+| [`mcp/`](./mcp) MCP server — read-only tools for AI agents ([docs/mcp.md](./docs/mcp.md)) | MCP-exposed order placement |
+
+The core (`src/`, CLI, skills) never holds keys or sends transactions. Order execution lives only in the opt-in [`executor/`](./executor) sub-package, which signs with **your** env-provided key, defaults to dry-run, and is never imported by the core. For normal redemption, use the official Polymarket app.
+
+New to [Polymarket](https://polymarket.com/?r=githuball&via=runes-leo&utm_source=github&utm_content=polymarket-toolkit)? Sign up via the link above (**affiliate disclosure:** the author may earn referral rewards; no extra cost to you).
+
+Building your own order executor? Start from the opt-in [`executor/`](./executor) sub-package ([docs/executor.md](./docs/executor.md)) — CLOB V2 limit orders with dry-run default, notional cap, and default builder attribution via [`src/builder.ts`](./src/builder.ts) (override / opt-out via env). See [builder attribution](./docs/builder-attribution.md) for the disclosure and FAQ. Read-only CLI/skills still do not send orders.
+
+---
+
+## Release notes
+
+### v0.7 — MCP server for AI agents
+
+- **`mcp/`** — [Model Context Protocol](https://modelcontextprotocol.io) server exposing 10 read-only tools (`pm_profile`, `pm_activity`, `pm_brier`, `pm_scan`, `pm_updown`, `pm_leaderboard`, `pm_redeem_watchdog`, `pm_pnl_check`, `pm_v2_check`, `pm_rate_limits`) — [docs/mcp.md](./docs/mcp.md)
+- The CLI is the contract: every tool shells out to `pm`, so the server is exactly as read-only as the CLI; inputs are allowlist-validated before reaching argv
+- Order placement is deliberately **not** exposed over MCP — the executor stays a separate, human-wired opt-in
+
+### v0.6 — Opt-in executor sub-package
+
+- **`executor/`** — isolated CLOB V2 order execution module ([docs/executor.md](./docs/executor.md)): own dependencies, never imported by the zero-dependency core
+- **Safety ladder** — dry-run by default (`EXECUTOR_LIVE=1` to post), notional cap `EXECUTOR_MAX_USD` (default $10), fail-closed credential validation
+- **Builder attribution wired end-to-end** — default / override / opt-out via core [`src/builder.ts`](./src/builder.ts), full disclosure in docs
+- Core CLI/skills remain read-only and key-free — scope table updated above
+
+### v0.5 — Toolbox CLI + roadmap flagships
+
+- **`pm` CLI** — profile · activity · scan · updown · v2-check · brier · redeem · markets
+- **Activity cap detection** — duplicate-page warnings near ~4000 rows
+- **V2 CTF FAQ** — [`docs/v2-ctf-ops-faq.md`](./docs/v2-ctf-ops-faq.md) (split/merge/convert · infra alignment)
+- **Builder attribution helper** — [`src/builder.ts`](./src/builder.ts) + [`docs/builder-attribution.md`](./docs/builder-attribution.md) for future CLOB executors, with default / override / opt-out paths
+- **Market scanner** · **crypto updown fields** · **handoff template** — [toolbox.md](./docs/toolbox.md)
+
+### v0.4 — Redeem watchdog
+
+**New public helper: redeem watchdog** — inspect redeemable positions without private keys.
+
+Polymarket's pUSD-era redemption flow handles normal user redemption inside the official app. This release does **not** replace or work around that flow. It adds a read-only status lane for agents and dashboards: which wallet still has rows surfaced as `redeemable=true` by the public Data API, what their `currentValue` is (winning rows pay out, losing rows pay $0), and whether a strategy account is below a configured cash watermark. v0.4 adds `fetchRedeemablePositionsPage`, `summarizeRedeemablePositions`, and `resolveRedeemMode` for that workflow. It never signs or sends transactions.
+
+```ts
+import {
+  fetchRedeemablePositionsPage,
+  summarizeRedeemablePositions,
+} from "./src/index.ts";
+
+const positions = await fetchRedeemablePositionsPage("0x...");
+console.log(summarizeRedeemablePositions(positions as never[]));
+```
+
+Also: **`pm` CLI** (toolbox drawers) — see [docs/toolbox.md](./docs/toolbox.md).
+
+### v0.3 — polymarket-pnl skill
+
+**New Skill: `polymarket-pnl`** — Audit-grade PnL via Data API cashflow reconstruction.
+
+Most profilers (including `polymarket-profile`) use position-level `cashPnL` which is an approximation. `polymarket-pnl` replays every BUY / SELL / REDEEM / MERGE / SPLIT / REBATE event and reconciles against current unrealized position value. Validated against Polymarket's official `/profit` endpoint on the public leaderboard: **MAPE ~0.2%**, all top accounts within 1% error. Use this when the number has to hold up to scrutiny.
+
+---
+
+## Redeem Watchdog Helpers
+
+Inspect redeemable positions for a public proxy wallet without touching keys, allowances, relayers, or transactions.
+
+### What you get
+
+- **Redeemable scan** — `fetchRedeemablePositionsPage(user)` calls Data API `/positions?redeemable=true`
+- **Condition rollup** — `summarizeRedeemablePositions(rows)` groups rows by `conditionId` and sums `currentValue` (losing rows contribute `$0`, which is the correct payable amount — not their `size`)
+- **Policy label** — `resolveRedeemMode({ lowWatermark })` returns `"watchdog"` or `"low_watermark"`. There is intentionally no `"active"` value: this toolkit never executes a redeem, so an active label belongs in your own wallet system, not here.
+
+### Example
+
+```bash
+npx tsx examples/15-redeem-watchdog.ts 0x63ce342161250d705dc0b16df89036c8e5f9ba9a 25
+```
+
+```json
+{
+  "mode": "low_watermark",
+  "redeemableCount": 3,
+  "conditionCount": 3,
+  "estimatedRedeemableValue": 0,
+  "topConditions": [
+    { "conditionId": "0x...", "slug": "btc-updown-5m-1771773600", "count": 1, "estimatedCurrentValue": 0 }
+  ]
+}
+```
+
+> Three rows surfaced as `redeemable=true` but every `currentValue` is `0` — they are losing tokens that redeem to `$0`. The Data API still surfaces them after resolution; the helper reports them honestly without inflating payable value.
+
+### Safety boundary
+
+This toolkit only reads public APIs. It does not redeem tokens, sign Safe transactions, call relayers, move funds, or require private keys. The official Polymarket app remains the right place for normal user redemption. Treat this helper as a dashboard/agent primitive; execution stays in your own wallet system.
+
+---
+
+## polymarket-profile
+
+Turn any Polymarket address into a complete trading profile.
+
+### What you get
+
+- **PnL Overview** — Total profit/loss, 7d/30d trends
+- **Win Rate** — Accurate settlement-based calculation (not position-level approximation)
+- **Open Positions** — Current holdings with unrealized PnL and expiry dates
+- **Activity Breakdown** — TRADE / SPLIT / MERGE / REDEEM volume with full pagination
+- **Category Distribution** — Where the money goes: Crypto, Politics, Sports, Weather, etc.
+- **Top Wins & Losses** — Best and worst settled positions
+- **Strategy Pattern** — Auto-detected: Market Maker, SPLIT Arbitrage, Diversified, Whale, etc.
+
+### How it works
+
+The skill instructs your AI agent to call Polymarket's public APIs (lb-api, data-api, gamma-api), process the data, and output a structured profile. No API key needed, no local database, no setup.
+
+```
+You: Profile this Polymarket address: 0x63ce342161250d705dc0b16df89036c8e5f9ba9a
+
+AI: Fetching data... (paginating 12 pages of activity)
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      Polymarket Profile: 0x8dxd
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    📊 Overview
+      Total PnL:  $2,382,780.64
+      Win Rate:   6/11 (54.5%)
+      ...
+
+    🎯 Strategy: Market Maker (high-frequency, concentrated in Crypto)
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### Setup
+
+**Claude Code:**
+```bash
+# Replace the placeholder with the skills directory configured by your client
+export AGENT_SKILLS_DIR=/path/to/your/agent/skills
+cp -R skills/polymarket-profile "$AGENT_SKILLS_DIR/"
+```
+
+**OpenClaw:**
+```bash
+cp -R skills/polymarket-profile ~/.openclaw/skills/
+```
+
+**Any other AI agent:**
+Just paste the content of `skills/polymarket-profile/SKILL.md` into your conversation and ask your AI to follow the instructions.
+
+### Requirements
+
+- An AI agent that can run `curl` commands
+- Internet access to Polymarket APIs (some endpoints may need a proxy in certain regions)
+- That's it. No API keys, no database, no dependencies.
+
+New to Polymarket? [Create an account here](https://polymarket.com/?r=githuball&via=runes-leo&utm_source=github&utm_content=polymarket-toolkit).
+
+### Supported input
+
+| Input | Example | Resolution |
+|-------|---------|------------|
+| 0x address | `0x63ce342161250d705dc0b16df89036c8e5f9ba9a` | Direct |
+| Profile URL | `polymarket.com/profile/Theo4` | Auto-resolve via leaderboard |
+| Username | `Theo4` | Auto-resolve via leaderboard |
+
+Username lookup works for all leaderboard-ranked users (auto-resolved via `lb-api`). Unranked accounts (zero trading history) require the 0x address directly.
+
+### Data sources
+
+All public, no authentication required:
+
+| API | What it provides |
+|-----|-----------------|
+| `lb-api.polymarket.com` | PnL, leaderboard rankings |
+| `data-api.polymarket.com` | Positions, activity history |
+| `gamma-api.polymarket.com` | Market metadata, categories, tags |
+
+### Known limitations
+
+- Username → address auto-resolution works for leaderboard-ranked users only (unranked accounts need 0x address)
+- Category mapping uses Gamma API tags + keyword fallback (not 100% accurate)
+- Top Wins/Losses uses position-level cashPnl (approximate, not per-trade)
+- Large accounts (10K+ trades) may take 30+ seconds to paginate
+- lb-api 7d/30d PnL may return empty for inactive accounts
+- **Activity API ~4000 row cap:** continuing pagination may return identical JSON — use `pm activity` / `fetchActivityPages` or `polymarket-pnl` with `pagination_incomplete`
+
+---
+
+## polymarket-brier
+
+Rate any trader's prediction accuracy with Brier Score — the standard metric used by Metaculus, Good Judgment Project, and forecasting research.
+
+### Why not just look at PnL?
+
+| Trader Type | PnL | Brier Score | Signal Value |
+|-------------|-----|-------------|-------------|
+| Skilled predictor | High | Good (low) | Best signal source |
+| Market maker | High | Poor (high) | Earns spread, not predictions |
+| SPLIT arbitrageur | High | N/A | Market-neutral, no directional view |
+| Accurate but cautious | Low | Good (low) | Good signal, small sizing |
+
+### Example
+
+```
+You: What's the Brier Score for Theo4?
+
+AI: Fetching settled positions...
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Brier Score: Theo4
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  📊 Prediction Accuracy
+    Brier Score:      0.12 (Good)
+    Settled Markets:  36
+    Correct:          29/36 (81%)
+
+  📐 Calibration
+    | Confidence | Positions | Forecast | Actual | Gap  |
+    |------------|-----------|----------|--------|------|
+    | High       | 12        | 87%      | 83%    | -4%  |
+    | Moderate   | 15        | 68%      | 67%    | -1%  |
+    | Coin flip  | 6         | 52%      | 50%    | -2%  |
+    | Contrarian | 3         | 28%      | 33%    | +5%  |
+```
+
+### Setup
+
+```bash
+# Claude Code
+export AGENT_SKILLS_DIR=/path/to/your/agent/skills
+cp -R skills/polymarket-brier "$AGENT_SKILLS_DIR/"
+
+# OpenClaw
+cp -R skills/polymarket-brier ~/.openclaw/skills/
+```
+
+After installation: "What's the Brier Score for 0x63ce..." or "How accurate is Theo4's predictions?"
+
+New to Polymarket? [Create an account here](https://polymarket.com/?r=githuball&via=runes-leo&utm_source=github&utm_content=polymarket-toolkit).
+
+---
+
+## polymarket-pnl
+
+Audit-grade PnL for any Polymarket address via Data API cashflow reconstruction. Replays every BUY / SELL / REDEEM / MERGE / SPLIT / REBATE event and reconciles against current unrealized position value.
+
+### Why not just use position-level cashPnL?
+
+Position-level `cashPnL` (what most profilers surface) is rounded at the position level and drops partial fills, making it approximate. `polymarket-pnl` walks the full activity log — every trade event, every REDEEM, every MERGE — and computes PnL from the cashflow identity:
+
+```
+PnL = SUM(SELL + REDEEM + MERGE + REBATE) - SUM(BUY + SPLIT) + unrealized_position_value
+```
+
+Validated on Polymarket's own leaderboard: `precise_pnl` matches the official `/profit` endpoint within **0.2% MAPE** on top traders.
+
+### Example
+
+```
+You: Compute precise PnL for the top 10 leaderboard addresses.
+
+AI: Fetching leaderboard... (10 addresses)
+    Processing 0x56687bf447... (15,993 trades)
+    ...
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      Benchmark: Precise PnL vs Leaderboard (official /profit)
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      ✅ 0x56687bf447... precise=$22,032,643.17  official=$22,053,933.75  err=0.1%
+      ✅ 0x1f2dd6d473... precise=$16,580,235.20  official=$16,619,506.63  err=0.2%
+      ...
+
+      MAPE: 0.2%  |  <10%: 10/10  |  <30%: 10/10
