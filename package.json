@@ -1,6 +1,6 @@
 {
   "name": "polymarket-toolkit",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "CLI + AI Skills workflow for profiling Polymarket traders from an address",
   "main": "src/index.ts",
   "scripts": {
